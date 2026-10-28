@@ -35,8 +35,9 @@ public:
 
     SimpleVector() noexcept = default;
 
+    // ArrayPtr(size) создаёт элементы
     explicit SimpleVector(size_t size)
-        : SimpleVector(size, Type{}) {
+        : items_(size), size_(size), capacity_(size) {
     }
 
     SimpleVector(size_t size, const Type& value)
@@ -44,22 +45,23 @@ public:
         std::fill(begin(), end(), value);
     }
 
+    // элементы initializer_list константные, поэтому они копируются
     SimpleVector(std::initializer_list<Type> init)
         : items_(init.size()), size_(init.size()), capacity_(init.size()) {
-        std::move(init.begin(), init.end(), begin());
+        std::copy(init.begin(), init.end(), begin());
     }
 
     explicit SimpleVector(ReserveProxyObj proxy)
         : items_(proxy.GetCapacity()), size_(0), capacity_(proxy.GetCapacity()) {
     }
 
-    // operator= сначала делает копию rhs,
-    // а потом меняет её местами с текущим вектором 
+    // вектор можно копировать
     SimpleVector(const SimpleVector& other)
         : items_(other.size_), size_(other.size_), capacity_(other.size_) {
         std::copy(other.begin(), other.end(), begin());
     }
 
+    // Copy-and-swap: сначала делаем копию rhs, потом меняемся с ней местами
     SimpleVector& operator=(const SimpleVector& rhs) {
         if (this != &rhs) {
             SimpleVector rhs_copy(rhs);
@@ -68,20 +70,17 @@ public:
         return *this;
     }
 
-    // Move-конструктор: забирает буфер у other вместо копирования элементов.
-    // После этого other пуст (size = 0, capacity = 0), но остаётся рабочим.
+    // Move-конструктор: забирает буфер у other вместо копирования элементов
     SimpleVector(SimpleVector&& other) noexcept
         : items_(std::move(other.items_))
         , size_(std::exchange(other.size_, 0))
         , capacity_(std::exchange(other.capacity_, 0)) {
     }
 
-    // Move-присваивание: забирает буфер у rhs, rhs остаётся пустым
+    // меняемся с rhs, старый буфер освободит деструктор rhs
     SimpleVector& operator=(SimpleVector&& rhs) noexcept {
         if (this != &rhs) {
-            items_ = std::move(rhs.items_);
-            size_ = std::exchange(rhs.size_, 0);
-            capacity_ = std::exchange(rhs.capacity_, 0);
+            swap(rhs);
         }
         return *this;
     }
@@ -126,33 +125,18 @@ public:
         size_ = 0;
     }
 
-// если места не хватает, элементы переносятся в новый буфер
+    // Resize: при нехватке места вызывает Reserve, новые элементы создаются по умолчанию
     void Resize(size_t new_size) {
-        if (new_size <= size_) {
-            size_ = new_size;
-            return;
+        if (new_size > capacity_) {
+            Reserve(std::max(new_size, capacity_ * 2));
         }
-        if (new_size <= capacity_) {
-            for (size_t i = size_; i < new_size; ++i) {
-                items_[i] = Type{};
-            }
-            size_ = new_size;
-            return;
+        if (new_size > size_) {
+            std::generate(end(), begin() + new_size, [] { return Type{}; });
         }
-
-        const size_t new_capacity = std::max(new_size, capacity_ * 2);
-        ArrayPtr<Type> new_items(new_capacity);
-
-        std::move(begin(), end(), new_items.Get());
-        for (size_t i = size_; i < new_size; ++i) {
-            new_items[i] = Type{};
-        }
-        items_ = std::move(new_items);
         size_ = new_size;
-        capacity_ = new_capacity;
     }
 
-    // Reserve увеличивает ёмкость, переносит элементы через std::move
+    // Reserve: увеличивает ёмкость, элементы переносятся в новый буфер через std::move
     void Reserve(size_t new_capacity) {
         if (new_capacity <= capacity_) {
             return;
@@ -163,7 +147,8 @@ public:
         capacity_ = new_capacity;
     }
 
-    // const Type& копирует значение, Type&& перемещает
+    // PushBack есть в двух версиях: для lvalue (const Type&) значение копируется,
+    // для rvalue (Type&&) перемещается
     void PushBack(const Type& value) {
         EmplaceBackImpl(value);
     }
@@ -177,6 +162,7 @@ public:
         --size_;
     }
 
+    // Insert: копирование и перемещение значения
     Iterator Insert(ConstIterator pos, const Type& value) {
         return InsertImpl(pos, value);
     }
@@ -185,7 +171,7 @@ public:
         return InsertImpl(pos, std::move(value));
     }
 
-    // Erase: удаляет элемент, сдвигая остальные влево через std::move
+    // Erase: удаляет элемент в позиции pos, сдвигая правую часть влево через std::move
     Iterator Erase(ConstIterator pos) {
         assert(pos >= cbegin() && pos < cend());
         const size_t index = static_cast<size_t>(pos - cbegin());
@@ -225,7 +211,7 @@ public:
     }
 
 private:
-    // std::forward сохраняет вид ссылки: lvalue копируется, rvalue перемещается.
+    // std::forward сохраняет вид ссылки: lvalue копируется, rvalue перемещается
     template <typename T>
     void EmplaceBackImpl(T&& value) {
         if (size_ == capacity_) {
@@ -235,24 +221,17 @@ private:
         ++size_;
     }
 
-    // InsertImpl: вставляет value перед pos; при нехватке места создаёт новый буфер
+    // InsertImpl: вставляет value перед pos и возвращает итератор на вставленный элемент
     template <typename T>
     Iterator InsertImpl(ConstIterator pos, T&& value) {
         assert(pos >= cbegin() && pos <= cend());
         const size_t index = static_cast<size_t>(pos - cbegin());
 
         if (size_ == capacity_) {
-            const size_t new_capacity = capacity_ == 0 ? 1 : capacity_ * 2;
-            ArrayPtr<Type> new_items(new_capacity);
-            std::move(begin(), begin() + index, new_items.Get());
-            new_items[index] = std::forward<T>(value);
-            std::move(begin() + index, end(), new_items.Get() + index + 1);
-            items_ = std::move(new_items);
-            capacity_ = new_capacity;
-        } else {
-            std::move_backward(begin() + index, end(), end() + 1);
-            items_[index] = std::forward<T>(value);
+            Reserve(capacity_ == 0 ? 1 : capacity_ * 2);
         }
+        std::move_backward(begin() + index, end(), end() + 1);
+        items_[index] = std::forward<T>(value);
 
         ++size_;
         return begin() + index;

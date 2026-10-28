@@ -17,25 +17,23 @@ public:
         raw_ptr_ = new Type[size]();
     }
 
-    explicit ArrayPtr(Type* raw_ptr) noexcept {
-        raw_ptr_ = raw_ptr;
+    explicit ArrayPtr(Type* raw_ptr) noexcept
+        : raw_ptr_(raw_ptr) {
     }
 
-
+    // ArrayPtr копировать нельзя
     ArrayPtr(const ArrayPtr&) = delete;
     ArrayPtr& operator=(const ArrayPtr&) = delete;
 
- 
-    // ArrayPtr нельзя копировать, тк он владеет массивом единолично
+    // владение передаётся только перемещением
     ArrayPtr(ArrayPtr&& other) noexcept
         : raw_ptr_(std::exchange(other.raw_ptr_, nullptr)) {
     }
 
-
+    // обмен указателями: старый буфер освободится в деструкторе other
     ArrayPtr& operator=(ArrayPtr&& other) noexcept {
         if (this != &other) {
-            delete[] raw_ptr_;
-            raw_ptr_ = std::exchange(other.raw_ptr_, nullptr);
+            swap(other);
         }
         return *this;
     }
@@ -43,7 +41,6 @@ public:
     ~ArrayPtr() {
         delete[] raw_ptr_;
     }
-
 
     [[nodiscard]] Type* Release() noexcept {
         return std::exchange(raw_ptr_, nullptr);
